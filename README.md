@@ -7,6 +7,11 @@ Testing tools to easily validate NLCS++ XMLs against Schematron schemas.
 - Validate XMLs for specific NLCS++ versions and matching phases.
 - Quickly open the relevant XML file by clicking the test itself.
 
+## Installation
+
+1. In the GitHub repository, under [_Actions_ &rarr; _Build VSIX_](https://github.com/krn-sytse/nlcspp-schematron-test-suite/actions/workflows/build-vsix.yaml), select the latest successful build. From the artifacts, download `vsix-package` and unzip the file.
+2. In VS Code, under the _Extensions_ tab, click the three dots in the upper-right corner. Select _Install from VSIX..._, then select the unzipped `.vsix` file.
+
 ## Requirements
 
 This extension was made specifically for the [nlcspp_inhoudelijke_validaties_temp](https://github.com/krn-nick/nlcspp_inhoudelijke_validaties_temp) repository.
