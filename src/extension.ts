@@ -4,103 +4,118 @@ import * as path from 'path'
 import { spawn } from 'child_process'
 import { XMLParser } from 'fast-xml-parser'
 
-const config = vscode.workspace.getConfiguration('schematron')
-const pathBase = vscode.workspace.workspaceFolders?.[0].uri.fsPath
-const jarPath = pathBase + config.get<string>('jarPath')!
-const schemaPath = pathBase + config.get<string>('schemaPath')!
+const xmlParser = new XMLParser({ ignoreAttributes: false })
+
+const pathBase = vscode.workspace.workspaceFolders?.[0].uri.fsPath as string
+const jarPath = path.join(pathBase, 'schxslt-cli.jar')
 
 export function activate(context: vscode.ExtensionContext) {
-	console.log(config)
-	console.log(jarPath)
-	console.log(schemaPath)
-	const schemaXml = fs.readFileSync(schemaPath, 'utf-8')
-	const xmlParser = new XMLParser({ ignoreAttributes: false })
-	const schemaJson = xmlParser.parse(schemaXml)
 
-	let phases = schemaJson.schema.phase
-	phases = Array.isArray(phases) ? phases : [phases]
-	phases = phases.map((phase: any) => phase['@_id'])
-
-	let versions = phases.map((phase: string) => {
-		const match = phase.match(/^v\d+/)
-		return match ? match[0] : null
-	}).filter(Boolean)
-	versions = [...new Set(versions)]
-
-    const testController = vscode.tests.createTestController('schematronTests', 'Schematron Tests')
+	const testController = vscode.tests.createTestController('schematronTests', 'Schematron Tests')
     context.subscriptions.push(testController)
 
 	testController.createRunProfile(
 		'Run Schematron',
 		vscode.TestRunProfileKind.Run,
 		async (request, token) => {
-			const run = testController.createTestRun(request)
 
 			for (const test of request.include ?? []) {
-				const phase = test.id.split('/')[0]
-				try {
-					const result = await runSchematronValidator(
-						jarPath,
-						test.uri?.path ?? '',
-						schemaPath,
-						phase
-					)
-
-					result.split('\n').forEach(resultLine => {
-						resultLine = resultLine.replace('[valid]', '\u001b[32m[valid]\u001b[0m').replace('[invalid]', '\u001b[31m[invalid]\u001b[0m')
-						if(resultLine.startsWith('            ')) {
-							resultLine = '\u001b[2m' + resultLine + '\u001b[0m'
-						}
-						run.appendOutput(resultLine + '\r\n\r\n')
-					})
-					run.passed(test)
-				} catch (err: any) {
-					err.message.split('\n').forEach((errLine: string) => {
-						if(errLine.trim().startsWith('at')) {
-							errLine = '\u001b[2m' + errLine + '\u001b[0m'
-						}
-						run.appendOutput(errLine + '\r\n')
-					})
-					run.failed(test, new vscode.TestMessage(err.message))
-				}
+				await executeTest(test, testController, request)
 			}
-			run.end()
 		},
 		true
+	)	
+
+	generateTests(testController)
+
+	const templatePathMatch = `${path.join(pathBase, 'templates')}/**/*.xml`
+	const schemaPathMatch = `${path.join(pathBase, 'validation_schemas', 'base')}/**/*.sch`
+	const watcher = vscode.workspace.createFileSystemWatcher(
+		`{${templatePathMatch},${schemaPathMatch}}`
 	)
 
-    const testsDir = vscode.workspace.workspaceFolders?.[0].uri.fsPath + '/source_xmls'
-    if (!testsDir) {
-        vscode.window.showErrorMessage('No workspace folder found.')
-        return
-    }
+	watcher.onDidChange(() => generateTests(testController))
+	watcher.onDidCreate(() => generateTests(testController))
+	watcher.onDidDelete(() => generateTests(testController))
 
-    const loadXmlTests = () => {
-		versions.forEach((version: string) => {
-			const versionSuite = testController.createTestItem(version, `${version} Tests`)
-			testController.items.add(versionSuite)
+	console.info("Schematron test suite successfully activated!")
+}
 
-			const versionDir = `${testsDir}/${version}`
-			const files = fs.readdirSync(versionDir)
+function generateTests(testController: vscode.TestController) {
+	const schemas: Record<string, any> = {}
+	const schemaPath = path.join(pathBase, 'validation_schemas', 'base')
 
-			const versionPhases = phases.filter((phase: string) => phase.startsWith(version))
-			versionPhases.forEach((phase: string) => {
-				const phaseSuite = testController.createTestItem(phase, phase)
-				versionSuite.children.add(phaseSuite)
+	fs.readdirSync(schemaPath).forEach(schemaFile => {
+		const version = path.parse(schemaFile).name
+		const xmlContent = fs.readFileSync(path.join(schemaPath, schemaFile), 'utf-8')
+		schemas[version] = xmlParser.parse(xmlContent).schema
+	})
 
-				files.forEach(file => {
-					if (file.endsWith('.xml')) {
-						const fileUri = vscode.Uri.file(path.join(versionDir, file))
-						const testItem = testController.createTestItem(`${phase}/${file}`, file, fileUri)
-						phaseSuite.children.add(testItem)
-					}
-				})
+	for (const [version, schema] of Object.entries(schemas)) {
+		const versionSuite = testController.createTestItem(version, version)
+		testController.items.add(versionSuite)
+
+		const ruleNames = schema.phase!.map((phase: any) => phase['@_id']) as string[]
+		ruleNames.forEach(ruleName => {
+			const ruleSuite = testController.createTestItem(ruleName, ruleName)
+			versionSuite.children.add(ruleSuite);
+			
+			['passing', 'failing'].forEach(testType => {
+				const testTypeSuite = testController.createTestItem(testType, testType)
+				ruleSuite.children.add(testTypeSuite)
+
+				const testDir = path.join(path.join(pathBase, 'templates', version, ruleName, testType))
+				fs.readdirSync(testDir)
+					.forEach(testFile => {
+						const testFileName = path.parse(testFile).name
+						const fileUri = vscode.Uri.file(path.join(testDir, testFile))
+						const testItem = testController.createTestItem(testFileName, testFileName, fileUri)
+						testTypeSuite.children.add(testItem)
+					})
 			})
 		})
-    }
+	}
+}
 
-    loadXmlTests()
-	console.info("Schematron test suite successfully activated!")
+async function executeTest(test: vscode.TestItem, testController: vscode.TestController, request: vscode.TestRunRequest) {
+	if (test.children.size > 0) {
+		test.children.forEach(async child => await executeTest(child, testController, request))
+		return
+	}
+
+	const name = test.id
+	const testType = test.parent!.id
+	const rule = test.parent!.parent!.id
+	const version = test.parent!.parent!.parent!.id
+
+	const run = testController.createTestRun(request, `${version} ${rule} ${testType} ${name}`)
+
+	const schemaPath = path.join(pathBase, 'validation_schemas', 'base', `${version}.sch`)
+	try {
+		const validationOutput = await runSchematronValidator(
+			jarPath,
+			test.uri!.path,
+			schemaPath,
+			rule
+		)
+		formatValidationOutput(validationOutput, run)
+
+		if (testType === 'passing' && validationOutput.startsWith('[invalid]')) {
+			run.failed(test, new vscode.TestMessage('Expected validation to pass, but has failed'))
+		}
+		else if (testType === 'failing' && validationOutput.startsWith('[valid]')) {
+			run.failed(test, new vscode.TestMessage('Expected validation to fail, but has passed'))
+		}
+		else {
+			run.passed(test)
+		}
+	}
+	catch(err: any) {
+		formatValidationOutput(err.message, run)
+		run.errored(test, new vscode.TestMessage(err.message))
+	}
+
+	run.end()
 }
 
 function runSchematronValidator(jarPath: string, xmlPath: string, schemaPath: string, phase: string): Promise<string> {
@@ -132,4 +147,14 @@ function runSchematronValidator(jarPath: string, xmlPath: string, schemaPath: st
             }
         })
     })
+}
+
+function formatValidationOutput(validationOutput: string, run: vscode.TestRun) {
+	validationOutput.split('\n').forEach(outputLine => {
+		outputLine = outputLine.replace('[valid]', '\u001b[32m[valid]\u001b[0m').replace('[invalid]', '\u001b[31m[invalid]\u001b[0m')
+		if(outputLine.startsWith('      ')) {
+			outputLine = '\u001b[2m' + outputLine + '\u001b[0m'
+		}
+		run.appendOutput(outputLine + '\r\n')
+	})
 }

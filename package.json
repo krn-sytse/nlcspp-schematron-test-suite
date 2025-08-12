@@ -18,12 +18,6 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
-    "commands": [
-      {
-        "command": "schematron-test-suite.helloWorld",
-        "title": "Hello World"
-      }
-    ],
     "configuration": {
       "type": "object",
       "title": "Schematron Validator",
@@ -32,11 +26,6 @@
           "type": "string",
           "default": "/schxslt-cli.jar",
           "description": "Relative path to the Schematron validator JAR file"
-        },
-        "schematron.schemaPath": {
-          "type": "string",
-          "default": "/validation_schemas/nlcs_plus_plus_schema.sch",
-          "description": "Relative path to the Schematron .sch schema file"
         }
       }
     }
