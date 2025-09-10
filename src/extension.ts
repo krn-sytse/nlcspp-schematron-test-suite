@@ -64,7 +64,7 @@ function generateTests(testController: vscode.TestController) {
 				const testTypeSuite = testController.createTestItem(testType, testType)
 				ruleSuite.children.add(testTypeSuite)
 
-				const testDir = path.join(path.join(pathBase, 'templates', version, ruleName, testType))
+				const testDir = path.join(path.join(pathBase, 'test/rule_validation_data', version, ruleName, testType))
 				fs.readdirSync(testDir)
 					.forEach(testFile => {
 						const testFileName = path.parse(testFile).name
