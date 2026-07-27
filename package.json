@@ -1,8 +1,10 @@
 {
   "name": "schematron-test-suite",
-  "displayName": "schematron test suite",
-  "description": "",
-  "version": "0.0.1",
+  "displayName": "NLCS++ Schematron Test Suite",
+  "description": "Testing tools for local development of NLCS++ validation rules.",
+  "publisher": "SytseWalraven",
+  "version": "0.0.2",
+  "icon": "./icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/krn-sytse/nlcspp-schematron-test-suite"
