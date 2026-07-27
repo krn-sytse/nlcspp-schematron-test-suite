@@ -26,6 +26,12 @@
           "type": "string",
           "default": "/schxslt-cli.jar",
           "description": "Relative path to the Schematron validator JAR file"
+        },
+        "schematron.maxConcurrentValidations": {
+          "type": "integer",
+          "default": 4,
+          "minimum": 1,
+          "description": "Maximum number of Schematron validator (java) processes to run concurrently during a test run"
         }
       }
     }

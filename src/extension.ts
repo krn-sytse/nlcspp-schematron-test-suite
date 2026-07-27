@@ -9,6 +9,44 @@ const xmlParser = new XMLParser({ ignoreAttributes: false })
 const pathBase = vscode.workspace.workspaceFolders?.[0].uri.fsPath as string
 const jarPath = path.join(pathBase, 'schxslt-cli.jar')
 
+export class Semaphore {
+	private available: number
+	private queue: Array<() => void> = []
+
+	constructor(max: number) { this.available = max }
+
+	async acquire(token: vscode.CancellationToken): Promise<boolean> {
+		if (token.isCancellationRequested) {
+			return false
+		}
+		if (this.available > 0) {
+			this.available--
+			return true
+		}
+		return new Promise<boolean>(resolve => {
+			const grant = () => resolve(true)
+			this.queue.push(grant)
+			const sub = token.onCancellationRequested(() => {
+				const idx = this.queue.indexOf(grant)
+				if (idx >= 0) {
+					this.queue.splice(idx, 1)
+					sub.dispose()
+					resolve(false)
+				}
+			})
+		})
+	}
+
+	release(): void {
+		const next = this.queue.shift()
+		if (next) {
+			next()
+		} else {
+			this.available++
+		}
+	}
+}
+
 export function activate(context: vscode.ExtensionContext) {
 
 	const testController = vscode.tests.createTestController('schematronTests', 'Schematron Tests')
@@ -19,16 +57,21 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.TestRunProfileKind.Run,
 		async (request, token) => {
 
-			for (const test of request.include ?? []) {
-				await executeTest(test, testController, request)
-			}
+			const maxConcurrent = vscode.workspace.getConfiguration('schematron')
+				.get<number>('maxConcurrentValidations', 4)
+			const semaphore = new Semaphore(maxConcurrent)
+			const leafTests = (request.include ?? []).flatMap(collectLeafTests)
+
+			await Promise.all(leafTests.map(test =>
+				executeLeafTest(test, testController, request, semaphore, token)
+			))
 		},
 		true
-	)	
+	)
 
 	generateTests(testController)
 
-	const templatePathMatch = `${path.join(pathBase, 'templates')}/**/*.xml`
+	const templatePathMatch = `${path.join(pathBase, 'test')}/**/*.xml`
 	const schemaPathMatch = `${path.join(pathBase, 'validation_schemas', 'base')}/**/*.sch`
 	const watcher = vscode.workspace.createFileSystemWatcher(
 		`{${templatePathMatch},${schemaPathMatch}}`
@@ -77,12 +120,22 @@ function generateTests(testController: vscode.TestController) {
 	}
 }
 
-async function executeTest(test: vscode.TestItem, testController: vscode.TestController, request: vscode.TestRunRequest) {
-	if (test.children.size > 0) {
-		test.children.forEach(async child => await executeTest(child, testController, request))
-		return
+export function collectLeafTests(test: vscode.TestItem): vscode.TestItem[] {
+	if (test.children.size === 0) {
+		return [test]
 	}
+	const leaves: vscode.TestItem[] = []
+	test.children.forEach(child => leaves.push(...collectLeafTests(child)))
+	return leaves
+}
 
+async function executeLeafTest(
+	test: vscode.TestItem,
+	testController: vscode.TestController,
+	request: vscode.TestRunRequest,
+	semaphore: Semaphore,
+	token: vscode.CancellationToken
+) {
 	const name = test.id
 	const testType = test.parent!.id
 	const rule = test.parent!.parent!.id
@@ -90,13 +143,21 @@ async function executeTest(test: vscode.TestItem, testController: vscode.TestCon
 
 	const run = testController.createTestRun(request, `${version} ${rule} ${testType} ${name}`)
 
-	const schemaPath = path.join(pathBase, 'validation_schemas', 'base', `${version}.sch`)
+	const granted = await semaphore.acquire(token)
+	if (!granted) {
+		run.skipped(test)
+		run.end()
+		return
+	}
+
 	try {
+		const schemaPath = path.join(pathBase, 'validation_schemas', 'base', `${version}.sch`)
 		const validationOutput = await runSchematronValidator(
 			jarPath,
 			test.uri!.path,
 			schemaPath,
-			rule
+			rule,
+			token
 		)
 		formatValidationOutput(validationOutput, run)
 
@@ -111,14 +172,20 @@ async function executeTest(test: vscode.TestItem, testController: vscode.TestCon
 		}
 	}
 	catch(err: any) {
-		formatValidationOutput(err.message, run)
-		run.errored(test, new vscode.TestMessage(err.message))
+		if (token.isCancellationRequested) {
+			run.skipped(test)
+		} else {
+			formatValidationOutput(err.message, run)
+			run.errored(test, new vscode.TestMessage(err.message))
+		}
 	}
-
-	run.end()
+	finally {
+		semaphore.release()
+		run.end()
+	}
 }
 
-function runSchematronValidator(jarPath: string, xmlPath: string, schemaPath: string, phase: string): Promise<string> {
+function runSchematronValidator(jarPath: string, xmlPath: string, schemaPath: string, phase: string, token: vscode.CancellationToken): Promise<string> {
     return new Promise((resolve, reject) => {
         const java = spawn('java', [
             '-jar', jarPath,
@@ -128,18 +195,26 @@ function runSchematronValidator(jarPath: string, xmlPath: string, schemaPath: st
             '-v'
         ])
 
+        const cancelSub = token.onCancellationRequested(() => java.kill())
+
         let stdout = ''
         let stderr = ''
 
         java.stdout.on('data', (data) => {
             stdout += data.toString()
         })
-		
+
         java.stderr.on('data', (data) => {
 			stderr += data.toString()
         })
 
+        java.on('error', (err) => {
+            cancelSub.dispose()
+            reject(err)
+        })
+
         java.on('close', (code) => {
+            cancelSub.dispose()
             if (code === 0) {
                 resolve(stdout)
             } else {
