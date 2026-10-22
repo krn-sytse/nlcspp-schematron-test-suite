@@ -72,7 +72,7 @@ export function activate(context: vscode.ExtensionContext) {
 	generateTests(testController)
 
 	const templatePathMatch = `${path.join(pathBase, 'test')}/**/*.xml`
-	const schemaPathMatch = `${path.join(pathBase, 'validation_schemas', 'base')}/**/*.sch`
+	const schemaPathMatch = `${path.join(pathBase, 'validation_schemas')}/*/main.sch`
 	const watcher = vscode.workspace.createFileSystemWatcher(
 		`{${templatePathMatch},${schemaPathMatch}}`
 	)
@@ -86,17 +86,24 @@ export function activate(context: vscode.ExtensionContext) {
 
 function generateTests(testController: vscode.TestController) {
 	const schemas: Record<string, any> = {}
-	const schemaPath = path.join(pathBase, 'validation_schemas', 'base')
+	const schemasPath = path.join(pathBase, 'validation_schemas')
 
-	fs.readdirSync(schemaPath).forEach(schemaFile => {
-		const version = path.parse(schemaFile).name
-		const xmlContent = fs.readFileSync(path.join(schemaPath, schemaFile), 'utf-8')
-		schemas[version] = xmlParser.parse(xmlContent).schema
-	})
+	// Each version lives in its own folder with a main.sch; other folders (xsl_functions, phases_transpiled) are skipped
+	fs.readdirSync(schemasPath, { withFileTypes: true })
+		.filter(entry => entry.isDirectory())
+		.forEach(entry => {
+			const schemaFile = getSchemaPath(entry.name)
+			if (!fs.existsSync(schemaFile)) {
+				return
+			}
+			const xmlContent = fs.readFileSync(schemaFile, 'utf-8')
+			schemas[entry.name] = xmlParser.parse(xmlContent).schema
+		})
 
+	const versionSuites: vscode.TestItem[] = []
 	for (const [version, schema] of Object.entries(schemas)) {
 		const versionSuite = testController.createTestItem(version, version)
-		testController.items.add(versionSuite)
+		versionSuites.push(versionSuite)
 
 		const ruleNames = schema.phase!.map((phase: any) => phase['@_id']) as string[]
 		ruleNames.forEach(ruleName => {
@@ -107,7 +114,10 @@ function generateTests(testController: vscode.TestController) {
 				const testTypeSuite = testController.createTestItem(testType, testType)
 				ruleSuite.children.add(testTypeSuite)
 
-				const testDir = path.join(path.join(pathBase, 'test/rule_validation_data', version, ruleName, testType))
+				const testDir = path.join(pathBase, 'test', 'rule_validation_data', version, ruleName, testType)
+				if (!fs.existsSync(testDir)) {
+					return
+				}
 				fs.readdirSync(testDir)
 					.forEach(testFile => {
 						const testFileName = path.parse(testFile).name
@@ -118,6 +128,13 @@ function generateTests(testController: vscode.TestController) {
 			})
 		})
 	}
+
+	// Replace instead of add, so versions that no longer exist are removed from the tree
+	testController.items.replace(versionSuites)
+}
+
+function getSchemaPath(version: string): string {
+	return path.join(pathBase, 'validation_schemas', version, 'main.sch')
 }
 
 export function collectLeafTests(test: vscode.TestItem): vscode.TestItem[] {
@@ -151,7 +168,7 @@ async function executeLeafTest(
 	}
 
 	try {
-		const schemaPath = path.join(pathBase, 'validation_schemas', 'base', `${version}.sch`)
+		const schemaPath = getSchemaPath(version)
 		const validationOutput = await runSchematronValidator(
 			jarPath,
 			test.uri!.path,
