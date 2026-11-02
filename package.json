@@ -3,7 +3,7 @@
   "displayName": "NLCS++ Schematron Test Suite",
   "description": "Testing tools for local development of NLCS++ validation rules.",
   "publisher": "SytseWalraven",
-  "version": "0.0.2",
+  "version": "0.0.4",
   "icon": "./icon.png",
   "repository": {
     "type": "git",
@@ -24,10 +24,15 @@
       "type": "object",
       "title": "Schematron Validator",
       "properties": {
-        "schematron.jarPath": {
+        "schematron.saxonJarPath": {
           "type": "string",
-          "default": "/schxslt-cli.jar",
-          "description": "Relative path to the Schematron validator JAR file"
+          "default": "saxon-he.jar",
+          "description": "Path to the Saxon HE JAR, relative to the workspace root (or absolute). Used to transpile phases and run validations, like the repository's own scripts."
+        },
+        "schematron.javaPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the java executable. Leave empty to use `java` from PATH."
         },
         "schematron.maxConcurrentValidations": {
           "type": "integer",
